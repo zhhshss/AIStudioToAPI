@@ -5,7 +5,7 @@ const path = require("path");
 
 const AuthSource = require("../auth/AuthSource");
 const UsageStatsService = require("../core/UsageStatsService");
-const { PostgresSessionStore } = require("./PostgresStore");
+const { buildPoolConfig, PostgresSessionStore } = require("./PostgresStore");
 
 const silentLogger = {
     debug() {},
@@ -148,6 +148,14 @@ const run = async () => {
             sessionStore.get("abc", (err, sess) => (err ? reject(err) : resolve(sess)));
         });
         assert.strictEqual(loaded.user, "demo");
+
+        const requireConfig = buildPoolConfig("postgres://user:pass@example.com:5432/db?sslmode=require");
+        assert.deepStrictEqual(requireConfig.ssl, { rejectUnauthorized: false });
+        assert.ok(!requireConfig.connectionString.includes("sslmode="));
+
+        const verifyFullConfig = buildPoolConfig("postgres://user:pass@example.com:5432/db?sslmode=verify-full");
+        assert.deepStrictEqual(verifyFullConfig.ssl, { rejectUnauthorized: true });
+        assert.ok(verifyFullConfig.connectionString.includes("sslmode=verify-full"));
     } finally {
         process.chdir(originalCwd);
         fs.rmSync(tempRoot, { force: true, recursive: true });

@@ -6,6 +6,31 @@
 const { Pool } = require("pg");
 const session = require("express-session");
 
+const buildPoolConfig = connectionString => {
+    const parsed = new URL(connectionString);
+    const sslMode = String(parsed.searchParams.get("sslmode") || "").toLowerCase();
+    const config = {
+        connectionString,
+        max: Number.parseInt(process.env.PG_POOL_MAX || "4", 10) || 4,
+    };
+
+    if (sslMode === "disable") {
+        return config;
+    }
+
+    if (sslMode === "verify-full") {
+        config.ssl = { rejectUnauthorized: true };
+        return config;
+    }
+
+    // Aiven and similar managed Postgres providers often present a chain Node
+    // does not trust by default. Keep TLS on, but do not fail the handshake.
+    parsed.searchParams.delete("sslmode");
+    config.connectionString = parsed.toString();
+    config.ssl = { rejectUnauthorized: false };
+    return config;
+};
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS auth_records (
     account_index INTEGER PRIMARY KEY,
@@ -29,10 +54,7 @@ CREATE INDEX IF NOT EXISTS web_sessions_expire_idx ON web_sessions (expire);
 class PostgresStore {
     constructor(connectionString, logger) {
         this.logger = logger;
-        this.pool = new Pool({
-            connectionString,
-            max: Number.parseInt(process.env.PG_POOL_MAX || "4", 10) || 4,
-        });
+        this.pool = new Pool(buildPoolConfig(connectionString));
         this.ready = this._init();
     }
 
@@ -161,4 +183,4 @@ const createPostgresStore = async (connectionString, logger) => {
     return store;
 };
 
-module.exports = { createPostgresStore, PostgresSessionStore, PostgresStore };
+module.exports = { buildPoolConfig, createPostgresStore, PostgresSessionStore, PostgresStore };
