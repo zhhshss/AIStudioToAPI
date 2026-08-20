@@ -31,12 +31,12 @@ class AuthSource {
         // Duplicate groups (email -> kept + duplicates)
         this.duplicateGroups = [];
         this.lastScannedIndices = "[]"; // Cache to track changes
-
-        this.logger.info('[Auth] Using files in "configs/auth/" directory for authentication.');
+        this.store = null;
+        this._authCache = new Map();
 
         this.reloadAuthSources(true); // Initial load
 
-        if (this.availableIndices.length === 0) {
+        if (this.availableIndices.length === 0 && !(process.env.DATABASE_URL || "").trim()) {
             this.logger.warn(
                 `[Auth] No valid authentication sources found in 'file' mode. The server will start in account binding mode.`
             );
@@ -61,45 +61,94 @@ class AuthSource {
         return false; // No changes
     }
 
-    removeAuth(index) {
+    async removeAuth(index) {
         if (!Number.isInteger(index)) {
             throw new Error("Invalid account index.");
         }
 
-        const authFilePath = path.join(process.cwd(), "configs", "auth", `auth-${index}.json`);
-        if (!fs.existsSync(authFilePath)) {
-            throw new Error(`Auth file for account #${index} does not exist.`);
+        if (this.store) {
+            if (!this._authCache.has(index)) {
+                throw new Error(`Auth record for account #${index} does not exist.`);
+            }
+            const deleted = await this.store.deleteAuthRecord(index);
+            if (!deleted) {
+                throw new Error(`Auth record for account #${index} does not exist.`);
+            }
+            this._authCache.delete(index);
+        } else {
+            const authFilePath = this._authFilePath(index);
+            if (!fs.existsSync(authFilePath)) {
+                throw new Error(`Auth file for account #${index} does not exist.`);
+            }
+            try {
+                fs.unlinkSync(authFilePath);
+            } catch (error) {
+                throw new Error(`Failed to delete auth file for account #${index}: ${error.message}`);
+            }
         }
 
-        try {
-            fs.unlinkSync(authFilePath);
-        } catch (error) {
-            throw new Error(`Failed to delete auth file for account #${index}: ${error.message}`);
-        }
-
+        this.reloadAuthSources(true);
         return {
             remainingAccounts: this.availableIndices.length,
             removedIndex: index,
         };
     }
 
+    async loadFromStore() {
+        if (!this.store) return false;
+        let records = await this.store.listAuthRecords();
+        if (records.length === 0) {
+            records = await this._importLocalAuthFiles();
+        }
+        this._authCache = new Map(records.map(record => [record.index, record.payload]));
+        this.reloadAuthSources(true);
+        return true;
+    }
+
+    async _importLocalAuthFiles() {
+        const configDir = path.join(process.cwd(), "configs", "auth");
+        if (!fs.existsSync(configDir)) return [];
+
+        const imported = [];
+        const files = fs.readdirSync(configDir).filter(file => /^auth-\d+\.json$/.test(file));
+        for (const file of files) {
+            const index = parseInt(file.match(/^auth-(\d+)\.json$/)[1], 10);
+            try {
+                const payload = JSON.parse(fs.readFileSync(path.join(configDir, file), "utf-8"));
+                await this.store.upsertAuthRecord(index, payload);
+                imported.push({ index, payload });
+            } catch (error) {
+                this.logger.warn(`[Auth] Failed to import ${file} into PostgreSQL: ${error.message}`);
+            }
+        }
+
+        if (imported.length > 0) {
+            this.logger.info(`[Auth] Imported ${imported.length} local auth files into PostgreSQL.`);
+        }
+        return imported;
+    }
+
     _discoverAvailableIndices() {
         let indices = [];
-        const configDir = path.join(process.cwd(), "configs", "auth");
-        if (!fs.existsSync(configDir)) {
-            this.availableIndices = [];
-            this.initialIndices = [];
-            return;
-        }
-        try {
-            const files = fs.readdirSync(configDir);
-            const authFiles = files.filter(file => /^auth-\d+\.json$/.test(file));
-            indices = authFiles.map(file => parseInt(file.match(/^auth-(\d+)\.json$/)[1], 10));
-        } catch (error) {
-            this.logger.error(`[Auth] Failed to scan "configs/auth/" directory: ${error.message}`);
-            this.availableIndices = [];
-            this.initialIndices = [];
-            return;
+        if (this.store) {
+            indices = [...this._authCache.keys()];
+        } else {
+            const configDir = path.join(process.cwd(), "configs", "auth");
+            if (!fs.existsSync(configDir)) {
+                this.availableIndices = [];
+                this.initialIndices = [];
+                return;
+            }
+            try {
+                const files = fs.readdirSync(configDir);
+                const authFiles = files.filter(file => /^auth-\d+\.json$/.test(file));
+                indices = authFiles.map(file => parseInt(file.match(/^auth-(\d+)\.json$/)[1], 10));
+            } catch (error) {
+                this.logger.error(`[Auth] Failed to scan "configs/auth/" directory: ${error.message}`);
+                this.availableIndices = [];
+                this.initialIndices = [];
+                return;
+            }
         }
 
         this.initialIndices = [...new Set(indices)].sort((a, b) => a - b);
@@ -235,8 +284,31 @@ class AuthSource {
         }
     }
 
+    async setStore(store) {
+        this.store = store || null;
+        this.authMode = this.store ? "postgres" : "file";
+        this.logger.info(
+            this.store
+                ? "[Auth] Using PostgreSQL for authentication records."
+                : '[Auth] Using files in "configs/auth/" directory for authentication.'
+        );
+        if (this.store) {
+            await this.loadFromStore();
+        } else {
+            this.reloadAuthSources(true);
+        }
+    }
+
+    _authFilePath(index) {
+        return path.join(process.cwd(), "configs", "auth", `auth-${index}.json`);
+    }
+
     _getAuthContent(index) {
-        const authFilePath = path.join(process.cwd(), "configs", "auth", `auth-${index}.json`);
+        if (this.store) {
+            const payload = this._authCache.get(index);
+            return payload ? JSON.stringify(payload) : null;
+        }
+        const authFilePath = this._authFilePath(index);
         if (!fs.existsSync(authFilePath)) return null;
         try {
             return fs.readFileSync(authFilePath, "utf-8");
@@ -245,15 +317,35 @@ class AuthSource {
         }
     }
 
-    getAuth(index) {
-        if (!this.availableIndices.includes(index)) {
-            this.logger.error(`[Auth] Requested invalid or non-existent authentication index: ${index}`);
-            return null;
+    async saveAuthData(index, authData) {
+        const payload = typeof authData === "string" ? JSON.parse(authData) : JSON.parse(JSON.stringify(authData));
+        if (this.store) {
+            await this.store.upsertAuthRecord(index, payload);
+            this._authCache.set(index, payload);
+        } else {
+            const configDir = path.join(process.cwd(), "configs", "auth");
+            if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+            await fsPromises.writeFile(this._authFilePath(index), JSON.stringify(payload, null, 2));
         }
+        this.reloadAuthSources(true);
+        return payload;
+    }
 
+    async saveNewAuthData(authData) {
+        const existingIndices = [...new Set([...(this.initialIndices || []), ...(this.availableIndices || [])])];
+        const nextAuthIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
+        await this.saveAuthData(nextAuthIndex, authData);
+        return nextAuthIndex;
+    }
+
+    getAuth(index) {
         const jsonString = this._getAuthContent(index);
         if (!jsonString) {
-            this.logger.error(`[Auth] Unable to retrieve content for authentication source #${index} during read.`);
+            if (!this.availableIndices.includes(index)) {
+                this.logger.error(`[Auth] Requested invalid or non-existent authentication index: ${index}`);
+            } else {
+                this.logger.error(`[Auth] Unable to retrieve content for authentication source #${index} during read.`);
+            }
             return null;
         }
 
@@ -262,6 +354,16 @@ class AuthSource {
         } catch (e) {
             this.logger.error(`[Auth] Failed to parse JSON content from authentication source #${index}: ${e.message}`);
             return null;
+        }
+    }
+
+    getAuthContent(index) {
+        const jsonString = this._getAuthContent(index);
+        if (!jsonString) return null;
+        try {
+            return JSON.stringify(JSON.parse(jsonString), null, 2);
+        } catch {
+            return jsonString;
         }
     }
 
@@ -302,19 +404,14 @@ class AuthSource {
             return false;
         }
 
-        const authFilePath = path.join(process.cwd(), "configs", "auth", `auth-${index}.json`);
         try {
-            const fileContent = await fsPromises.readFile(authFilePath, "utf-8");
-            const authData = JSON.parse(fileContent);
+            const authData = this.getAuth(index);
+            if (!authData) {
+                this.logger.warn(`[Auth] Cannot mark non-existent auth #${index} as expired`);
+                return false;
+            }
             authData.expired = true;
-            await fsPromises.writeFile(authFilePath, JSON.stringify(authData, null, 2));
-
-            this.expiredIndices.push(index);
-
-            // Rebuild rotation indices to exclude this expired account
-            // This will properly rebuild canonicalIndexMap and handle duplicate relationships
-            this._buildRotationIndices();
-
+            await this.saveAuthData(index, authData);
             this.logger.warn(`[Auth] ⏰ Marked auth #${index} as expired`);
             return true;
         } catch (error) {
@@ -346,18 +443,14 @@ class AuthSource {
             return false;
         }
 
-        const authFilePath = path.join(process.cwd(), "configs", "auth", `auth-${index}.json`);
         try {
-            const fileContent = await fsPromises.readFile(authFilePath, "utf-8");
-            const authData = JSON.parse(fileContent);
+            const authData = this.getAuth(index);
+            if (!authData) {
+                this.logger.warn(`[Auth] Cannot unmark non-existent auth #${index}`);
+                return false;
+            }
             delete authData.expired;
-            await fsPromises.writeFile(authFilePath, JSON.stringify(authData, null, 2));
-
-            this.expiredIndices = this.expiredIndices.filter(idx => idx !== index);
-
-            // Rebuild rotation indices to include this restored account
-            this._buildRotationIndices();
-
+            await this.saveAuthData(index, authData);
             this.logger.info(`[Auth] ✅ Restored auth #${index} from expired status`);
             return true;
         } catch (error) {

@@ -58,7 +58,7 @@
    API 服务将在 `http://localhost:7860` 上运行。
 
    服务启动后，您可以在浏览器中访问 `http://localhost:7860` 打开 Web 控制台主页，在这里可以查看账号状态和服务状态。
-   请求统计数据会持久化保存到 `/data/usage-stats.jsonl`。
+   请求统计数据默认持久化保存到 `/data/usage-stats.jsonl`；如果配置了 `DATABASE_URL`，则会写入 PostgreSQL。
 
 5. 更新到最新版本（已有本地部署时）：
 
@@ -96,7 +96,7 @@ docker run -d \
 
 - `-p 7860:7860`：API 服务器端口（如果使用反向代理，强烈建议改成 `127.0.0.1:7860`）
 - `-v /path/to/auth:/app/configs/auth`：挂载包含认证文件的目录
-- `-v /path/to/data:/app/data`：挂载统计数据持久化目录（`/app/data/usage-stats.jsonl`）
+- `-v /path/to/data:/app/data`：挂载统计数据持久化目录（`/app/data/usage-stats.jsonl`）。配置 `DATABASE_URL` 后可不挂载
 - `-e API_KEYS`：用于身份验证的 API 密钥列表（使用逗号分隔）
 - `-e TZ=Asia/Shanghai`：时区设置（可选，默认使用系统时区）
 
@@ -282,7 +282,9 @@ services:
 | 变量名                      | 描述                                                                                                        | 默认值   |
 | :-------------------------- | :---------------------------------------------------------------------------------------------------------- | :------- |
 | `STREAMING_MODE`            | 流式传输模式。`real` 为真流式，`fake` 为假流式。                                                            | `real`   |
-| `ENABLE_USAGE_STATS`        | 是否启用请求统计。默认为启用；设为 `false` 后，不读取本地统计、不写入统计，`/api/usage-stats` 返回空数据。  | `true`   |
+| `ENABLE_USAGE_STATS`        | 是否启用请求统计。默认为启用；设为 `false` 后，不读取本地统计、不写入统计，`/api/usage-stats` 返回空数据。                           | `true`   |
+| `DATABASE_URL`              | 可选 PostgreSQL 连接串。配置后，账号凭据、请求统计和 Web Session 会写入数据库，不再依赖本地 `configs/auth` 与 `data/usage-stats.jsonl`。 | 无       |
+| `PG_POOL_MAX`               | PostgreSQL 连接池大小。                                                                                                          | `4`      |
 | `SAFETY_SETTINGS_THRESHOLD` | 安全设置的等级。官方说明：[Safety settings](https://ai.google.dev/gemini-api/docs/safety-settings?hl=zh-cn) | `OFF`    |
 | `FORCE_THINKING`            | 强制为所有请求启用思考模式。                                                                                | `false`  |
 | `FORCE_WEB_SEARCH`          | 强制为所有请求启用网络搜索。                                                                                | `false`  |

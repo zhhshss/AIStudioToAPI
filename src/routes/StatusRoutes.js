@@ -5,8 +5,6 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-const fs = require("fs");
-const path = require("path");
 const archiver = require("archiver");
 const VersionChecker = require("../utils/VersionChecker");
 const LoggingService = require("../utils/LoggingService");
@@ -154,14 +152,12 @@ class StatusRoutes {
                 if (usageStatsService.isImportingStats) {
                     return res.status(409).json({ message: "usageStatsImportInProgress" });
                 }
-                const statsFilePath =
-                    usageStatsService?.statsFilePath || path.join(process.cwd(), "data", "usage-stats.jsonl");
-
                 if (usageStatsService?.appendPromise) {
                     await usageStatsService.appendPromise.catch(() => {});
                 }
 
-                if (!fs.existsSync(statsFilePath)) {
+                const statsContent = await usageStatsService.exportJsonl();
+                if (!statsContent) {
                     return res.status(404).json({ message: "usageStatsDownloadNoData" });
                 }
 
@@ -170,7 +166,8 @@ class StatusRoutes {
                 }
 
                 res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-                res.sendFile(statsFilePath);
+                res.setHeader("Content-Disposition", 'attachment; filename="usage-stats.jsonl"');
+                res.send(statsContent);
             } catch (error) {
                 this.logger.error(`[WebUI] Failed to download usage stats: ${error.message}`);
                 res.status(500).json({ error: error.message, message: "usageStatsDownloadFailed" });
@@ -299,7 +296,7 @@ class StatusRoutes {
 
                     for (const index of removed) {
                         try {
-                            authSource.removeAuth(index);
+                            await authSource.removeAuth(index);
                             removedIndices.push(index);
                         } catch (error) {
                             failed.push({ error: error.message, index });
@@ -410,7 +407,7 @@ class StatusRoutes {
             // Delete auth files
             for (const targetIndex of validIndices) {
                 try {
-                    authSource.removeAuth(targetIndex);
+                    await authSource.removeAuth(targetIndex);
                     successIndices.push(targetIndex);
                     this.logger.warn(`[WebUI] Account #${targetIndex} deleted via batch delete.`);
                 } catch (error) {
@@ -513,15 +510,13 @@ class StatusRoutes {
                 });
             }
 
-            const configDir = path.join(process.cwd(), "configs", "auth");
-
             try {
-                // Pre-calculate valid files to archive
+                // Pre-calculate valid auth payloads to archive
                 const filesToArchive = [];
                 for (const idx of validIndices) {
-                    const filePath = path.join(configDir, `auth-${idx}.json`);
-                    if (fs.existsSync(filePath)) {
-                        filesToArchive.push({ filePath, name: `auth-${idx}.json` });
+                    const content = authSource.getAuthContent(idx);
+                    if (content) {
+                        filesToArchive.push({ content, name: `auth-${idx}.json` });
                     }
                 }
 
@@ -562,7 +557,7 @@ class StatusRoutes {
 
                 // Add files to archive
                 for (const file of filesToArchive) {
-                    archive.file(file.filePath, { name: file.name });
+                    archive.append(file.content, { name: file.name });
                 }
 
                 // Finalize archive
@@ -609,11 +604,8 @@ class StatusRoutes {
             await this.serverSystem.browserManager.abortBackgroundPreload();
 
             try {
-                // Delete auth file
-                authSource.removeAuth(targetIndex);
-
-                // Reload auth sources to update internal state immediately
-                authSource.reloadAuthSources();
+                // Delete auth record
+                await authSource.removeAuth(targetIndex);
 
                 // Always close context first, then connection
                 this.logger.info(`[WebUI] Account #${targetIndex} deleted. Closing context and connection...`);
@@ -790,27 +782,8 @@ class StatusRoutes {
                 // while we're adding a new account
                 await this.serverSystem.browserManager.abortBackgroundPreload();
 
-                // Ensure directory exists
-                const configDir = path.join(process.cwd(), "configs", "auth");
-                if (!fs.existsSync(configDir)) {
-                    fs.mkdirSync(configDir, { recursive: true });
-                }
-
-                // If content is object, stringify it
-                const fileContent = typeof content === "object" ? JSON.stringify(content, null, 2) : content;
-
-                // Always use max index + 1 to ensure new auth is always the latest
-                // This simplifies dedup logic assumption: higher index = newer auth
-                const existingIndices = this.serverSystem.authSource.availableIndices || [];
-                const nextAuthIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
-
+                const nextAuthIndex = await this.serverSystem.authSource.saveNewAuthData(content);
                 const newFilename = `auth-${nextAuthIndex}.json`;
-                const filePath = path.join(configDir, newFilename);
-
-                await fs.promises.writeFile(filePath, fileContent);
-
-                // Reload auth sources to pick up changes
-                this.serverSystem.authSource.reloadAuthSources();
 
                 // Rebalance context pool to pick up new account
                 this.serverSystem.browserManager.rebalanceContextPool().catch(err => {
@@ -841,19 +814,9 @@ class StatusRoutes {
                 // while we're adding multiple new accounts
                 await this.serverSystem.browserManager.abortBackgroundPreload();
 
-                // Ensure directory exists
-                const configDir = path.join(process.cwd(), "configs", "auth");
-                if (!fs.existsSync(configDir)) {
-                    fs.mkdirSync(configDir, { recursive: true });
-                }
-
                 const results = [];
 
-                // Get starting index
-                const existingIndices = this.serverSystem.authSource.availableIndices || [];
-                let nextAuthIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
-
-                // Write all files first, track each file's result
+                // Write all records first, track each file's result
                 for (let i = 0; i < files.length; i++) {
                     const content = files[i];
 
@@ -863,28 +826,20 @@ class StatusRoutes {
                     }
 
                     try {
-                        // If content is object, stringify it
-                        const fileContent = typeof content === "object" ? JSON.stringify(content, null, 2) : content;
-
+                        const nextAuthIndex = await this.serverSystem.authSource.saveNewAuthData(content);
                         const newFilename = `auth-${nextAuthIndex}.json`;
-                        const filePath = path.join(configDir, newFilename);
-
-                        await fs.promises.writeFile(filePath, fileContent);
 
                         results.push({ filename: newFilename, index: i, success: true });
                         this.logger.info(`[WebUI] Batch upload: generated ${newFilename}`);
-
-                        nextAuthIndex++;
                     } catch (error) {
                         results.push({ error: error.message, index: i, success: false });
                         this.logger.error(`[WebUI] Batch upload failed for file ${i}: ${error.message}`);
                     }
                 }
 
-                // Only reload and rebalance once after all files are written
+                // Only rebalance once after all records are written
                 const successCount = results.filter(r => r.success).length;
                 if (successCount > 0) {
-                    this.serverSystem.authSource.reloadAuthSources();
                     this.serverSystem.browserManager.rebalanceContextPool().catch(err => {
                         this.logger.error(`[Auth] Background rebalance failed: ${err.message}`);
                     });
@@ -916,11 +871,18 @@ class StatusRoutes {
             if (!/^[a-zA-Z0-9.-]+$/.test(filename) || filename.includes("..")) {
                 return res.status(400).json({ error: "Invalid filename" });
             }
-            const filePath = path.join(process.cwd(), "configs", "auth", filename);
-            if (!fs.existsSync(filePath)) {
+            const match = filename.match(/^auth-(\d+)\.json$/);
+            if (!match) {
+                return res.status(400).json({ error: "Invalid filename" });
+            }
+            const index = parseInt(match[1], 10);
+            const content = this.serverSystem.authSource.getAuthContent(index);
+            if (!content) {
                 return res.status(404).json({ error: "File not found" });
             }
-            res.download(filePath);
+            res.setHeader("Content-Type", "application/json; charset=utf-8");
+            res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+            res.send(content);
         });
     }
 

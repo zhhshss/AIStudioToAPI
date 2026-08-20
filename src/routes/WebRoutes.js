@@ -12,6 +12,7 @@ const express = require("express");
 const path = require("path");
 const AuthRoutes = require("./AuthRoutes");
 const StatusRoutes = require("./StatusRoutes");
+const { PostgresSessionStore } = require("../utils/PostgresStore");
 
 /**
  * Web Routes Manager
@@ -41,22 +42,25 @@ class WebRoutes {
         app.set("trust proxy", 1);
 
         app.use(cookieParser());
-        this.sessionParser = session({
-            name: process.env.SESSION_COOKIE_NAME || "sid",
+        const sessionOptions = {
             cookie: {
                 httpOnly: true,
-
                 maxAge: 604800000,
-
                 sameSite: "lax",
                 // This allows HTTP access in production if HTTPS is not configured
                 // Set SECURE_COOKIES=true when using HTTPS/SSL
                 secure: process.env.SECURE_COOKIES?.toLowerCase() === "true",
             },
+            name: process.env.SESSION_COOKIE_NAME || "sid",
             resave: false,
             saveUninitialized: false,
             secret: sessionSecret,
-        });
+        };
+        if (this.serverSystem.postgresStore) {
+            sessionOptions.store = new PostgresSessionStore(this.serverSystem.postgresStore);
+            this.logger.info("[WebUI] Using PostgreSQL session store.");
+        }
+        this.sessionParser = session(sessionOptions);
         app.use(this.sessionParser);
 
         // The login gate is the only public HTML. The application bundle and every

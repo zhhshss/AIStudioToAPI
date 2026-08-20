@@ -454,11 +454,7 @@ class BrowserManager {
         }
 
         try {
-            const configDir = path.join(process.cwd(), "configs", "auth");
-            const authFilePath = path.join(configDir, `auth-${authIndex}.json`);
-
-            // Read original file content to preserve all fields (e.g. accountName, custom fields)
-            // Relies on AuthSource validation (checks valid index AND file existence)
+            // Read original content to preserve all fields (e.g. accountName, custom fields)
             const authData = this.authSource.getAuth(authIndex);
             if (!authData) {
                 this.logger.warn(
@@ -476,8 +472,7 @@ class BrowserManager {
             // Note: We do NOT force-set accountName. If it was there, it stays; if not, it remains missing.
             // This preserves the "missing state" as requested.
 
-            // Overwrite the file with merged data
-            await fs.promises.writeFile(authFilePath, JSON.stringify(authData, null, 2));
+            await this.authSource.saveAuthData(authIndex, authData);
 
             this.logger.info(`[Auth Update] 💾 Successfully updated auth credentials for account #${authIndex}`);
         } catch (error) {

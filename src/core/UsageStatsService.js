@@ -17,6 +17,7 @@ class UsageStatsService {
         this.enabled = enabled !== false;
         this.appendPromise = Promise.resolve();
         this.isImportingStats = false;
+        this.store = null;
 
         if (this.enabled) {
             // Ensure data directory exists
@@ -24,7 +25,7 @@ class UsageStatsService {
                 fs.mkdirSync(this.dataDir, { recursive: true });
             }
 
-            // Load persisted state
+            // Load persisted state from files first; PostgreSQL can replace this later.
             this._loadFromFile();
         }
 
@@ -275,6 +276,43 @@ class UsageStatsService {
         return importPromise;
     }
 
+    async setStore(store) {
+        this.store = store || null;
+        if (!this.enabled || !this.store) return false;
+
+        try {
+            let records = (await this.store.listUsageRecords()).map(record => this._normalizeLoadedRecord(record));
+            if (records.length === 0 && this.records.length > 0) {
+                await this.store.replaceUsageRecords(this.records);
+                records = this.records;
+                if (this.logger) {
+                    this.logger.info(`[UsageStats] Imported ${records.length} local records into PostgreSQL.`);
+                }
+            } else {
+                this._replaceRecords(records);
+                this._recalculateFromRecords();
+            }
+            if (this.logger) {
+                this.logger.info(`[UsageStats] Loaded ${this.records.length} records from PostgreSQL.`);
+            }
+            return true;
+        } catch (err) {
+            if (this.logger) {
+                this.logger.warn(`[UsageStats] Failed to load stats from PostgreSQL: ${err.message}`);
+            }
+            return false;
+        }
+    }
+
+    async exportJsonl() {
+        if (!this.enabled) return "";
+        if (this.appendPromise) {
+            await this.appendPromise.catch(() => {});
+        }
+
+        return this.records.length ? `${this.records.map(record => JSON.stringify(record)).join("\n")}\n` : "";
+    }
+
     /**
      * Load persisted JSONL records during startup and rebuild derived in-memory
      * aggregates from the records that can be parsed.
@@ -300,10 +338,12 @@ class UsageStatsService {
 
     _appendRecord(record) {
         if (!this.enabled) return;
-        const line = JSON.stringify(record) + "\n";
+        const persist = this.store
+            ? this.store.appendUsageRecord(record)
+            : fs.promises.appendFile(this.statsFilePath, `${JSON.stringify(record)}\n`, "utf-8");
         this.appendPromise = this.appendPromise
             .catch(() => {})
-            .then(() => fs.promises.appendFile(this.statsFilePath, line, "utf-8"))
+            .then(() => persist)
             .catch(err => {
                 if (this.logger) {
                     this.logger.warn(`[UsageStats] Failed to append record: ${err.message}`);
@@ -376,8 +416,12 @@ class UsageStatsService {
         }
 
         const mergedRecords = this._normalizeImportedRecords(uniqueExistingRecords.concat(importedRecords));
-        const fileContent = mergedRecords.map(record => JSON.stringify(record)).join("\n");
-        await fs.promises.writeFile(this.statsFilePath, fileContent ? `${fileContent}\n` : "", "utf-8");
+        if (this.store) {
+            await this.store.replaceUsageRecords(mergedRecords);
+        } else {
+            const fileContent = mergedRecords.map(record => JSON.stringify(record)).join("\n");
+            await fs.promises.writeFile(this.statsFilePath, fileContent ? `${fileContent}\n` : "", "utf-8");
+        }
         this._replaceRecords(mergedRecords);
         this._recalculateFromRecords({ resetStartedAt: false });
 
@@ -403,6 +447,11 @@ class UsageStatsService {
      * lines are ignored so one bad line does not prevent loading the rest.
      */
     async _readRecordsFromFileAsync() {
+        if (this.store) {
+            const records = (await this.store.listUsageRecords()).map(record => this._normalizeLoadedRecord(record));
+            return { records };
+        }
+
         try {
             const content = await fs.promises.readFile(this.statsFilePath, "utf-8");
             return { records: this._parseRecordsContent(content) };

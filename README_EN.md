@@ -58,7 +58,7 @@ A tool that wraps the Google AI Studio Build App web interface to provide OpenAI
    The API server will be available at `http://localhost:7860`
 
    After the service starts, you can access `http://localhost:7860` in your browser to open the web console homepage, where you can view account status and service status.
-   Request usage statistics are persisted locally at `/data/usage-stats.jsonl`.
+   Request usage statistics are persisted locally at `/data/usage-stats.jsonl` by default. Set `DATABASE_URL` to store them in PostgreSQL instead.
 
 5. Update to the latest version (for existing local deployments):
 
@@ -96,7 +96,7 @@ Parameters:
 
 - `-p 7860:7860`: API server port (if using a reverse proxy, strongly consider `127.0.0.1:7860`)
 - `-v /path/to/auth:/app/configs/auth`: Mount directory containing auth files
-- `-v /path/to/data:/app/data`: Mount persistent data directory for usage statistics (`/app/data/usage-stats.jsonl`)
+- `-v /path/to/data:/app/data`: Mount persistent data directory for usage statistics (`/app/data/usage-stats.jsonl`). Optional when `DATABASE_URL` is set
 - `-e API_KEYS`: Comma-separated list of API keys for authentication
 - `-e TZ=America/New_York`: Timezone for logs (optional, defaults to system timezone)
 
@@ -281,6 +281,8 @@ Usage:
 | :-------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | :------------ |
 | `STREAMING_MODE`            | Streaming mode. `real` for real streaming, `fake` for fake streaming.                                                                                                                 | `real`        |
 | `ENABLE_USAGE_STATS`        | Whether to enable request usage statistics. Defaults to enabled. Set to `false` to skip loading local stats, skip writing stats, and make `/api/usage-stats` return an empty payload. | `true`        |
+| `DATABASE_URL`              | Optional PostgreSQL connection string. When set, auth records, usage stats, and web sessions are stored in the database instead of `configs/auth` and `data/usage-stats.jsonl`.       | None          |
+| `PG_POOL_MAX`               | PostgreSQL connection pool size.                                                                                                                                                      | `4`           |
 | `SAFETY_SETTINGS_THRESHOLD` | Safety settings level. Official docs: [Safety settings](https://ai.google.dev/gemini-api/docs/safety-settings)                                                                        | `OFF`         |
 | `FORCE_THINKING`            | Force enable thinking mode for all requests.                                                                                                                                          | `false`       |
 | `FORCE_WEB_SEARCH`          | Force enable web search for all requests.                                                                                                                                             | `false`       |

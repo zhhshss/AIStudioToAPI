@@ -111,11 +111,13 @@ class ProxyServerSystem extends EventEmitter {
 
         this.httpServer = null;
         this.wsServer = null;
+        this.postgresStore = null;
         this.webRoutes = new WebRoutes(this);
     }
 
     async start(initialAuthIndex = null) {
         this.logger.info("[System] Starting flexible startup process...");
+        await this._initPersistence();
         await this._startHttpServer();
         await this._startWebSocketServer();
         this.logger.info(`[System] Proxy server system startup complete.`);
@@ -654,7 +656,35 @@ class ProxyServerSystem extends EventEmitter {
             closeServer(this.wsServer, "WebSocket server"),
             closeServer(this.httpServer, "HTTP server"),
         ]);
+
+        if (this.postgresStore) {
+            try {
+                await this.postgresStore.close();
+                this.logger.info("[System] PostgreSQL pool closed");
+            } catch (error) {
+                this.logger.warn(`[System] Error while closing PostgreSQL pool: ${error.message}`);
+            }
+            this.postgresStore = null;
+        }
+
         this.logger.info("[System] Shutdown complete");
+    }
+
+    async _initPersistence() {
+        const databaseUrl = (process.env.DATABASE_URL || "").trim();
+        if (!databaseUrl) {
+            this.logger.info(
+                "[System] DATABASE_URL is not set. Using local files for auth, usage stats, and sessions."
+            );
+            return;
+        }
+
+        const { createPostgresStore } = require("../utils/PostgresStore");
+        this.postgresStore = await createPostgresStore(databaseUrl, this.logger);
+        await this.authSource.setStore(this.postgresStore);
+        if (this.usageStatsService?.setStore) {
+            await this.usageStatsService.setStore(this.postgresStore);
+        }
     }
 }
 

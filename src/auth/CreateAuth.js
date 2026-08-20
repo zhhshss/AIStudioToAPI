@@ -5,8 +5,6 @@
  * Author: Ellinav, iBenzene, bbbugg
  */
 
-const fs = require("fs");
-const path = require("path");
 const net = require("net");
 const { spawn } = require("child_process");
 
@@ -498,22 +496,12 @@ class CreateAuth {
             const storageState = await context.storageState();
             const authData = { ...storageState, accountName };
 
-            const configDir = path.join(process.cwd(), "configs", "auth");
-            if (!fs.existsSync(configDir)) {
-                fs.mkdirSync(configDir, { recursive: true });
-            }
-
             // Always use max index + 1 to ensure new auth is always the latest
             // This simplifies dedup logic assumption: higher index = newer auth
-            const existingIndices = this.serverSystem.authSource.availableIndices || [];
-            const nextAuthIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
+            const nextAuthIndex = await this.serverSystem.authSource.saveNewAuthData(authData);
+            const newAuthFilePath = `auth-${nextAuthIndex}.json`;
 
-            const newAuthFilePath = path.join(configDir, `auth-${nextAuthIndex}.json`);
-            fs.writeFileSync(newAuthFilePath, JSON.stringify(authData, null, 2));
-
-            this.logger.info(`[VNC] Saved new auth file: ${newAuthFilePath}`);
-
-            this.serverSystem.authSource.reloadAuthSources();
+            this.logger.info(`[VNC] Saved new auth record: ${newAuthFilePath}`);
 
             if (stickyProxy?.proxyLine) {
                 this.serverSystem.browserManager.stickyProxyManager.commitReservedProxyToAccount(

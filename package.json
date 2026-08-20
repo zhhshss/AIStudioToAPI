@@ -26,6 +26,8 @@
         "lint:css:fix": "stylelint \"ui/**/*.{css,less}\" --fix",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
+        "test": "npm run test:singbox && npm run test:persistence",
+        "test:persistence": "node src/utils/persistence.test.js",
         "test:singbox": "node scripts/singbox/build-config.test.js && node scripts/singbox/process-name.test.js"
     },
     "dependencies": {
@@ -38,14 +40,16 @@
         "express-session": "^1.18.0",
         "jszip": "^3.10.1",
         "mime-types": "^3.0.2",
+        "pg": "^8.23.0",
         "playwright": "1.59.1",
-        "yaml": "^2.8.1",
-        "ws": "^8.17.0"
+        "ws": "^8.17.0",
+        "yaml": "^2.8.1"
     },
     "devDependencies": {
         "@babel/core": "^7.28.5",
         "@babel/eslint-parser": "^7.28.5",
         "@vitejs/plugin-vue": "^5.1.0",
+        "@vue/shared": "^3.4.26",
         "concurrently": "^9.2.1",
         "cross-env": "^7.0.3",
         "element-plus": "^2.7.2",
@@ -69,8 +73,7 @@
         "vite": "^5.4.8",
         "vue": "^3.4.26",
         "vue-eslint-parser": "^10.2.0",
-        "vue-router": "^4.3.2",
-        "@vue/shared": "^3.4.26"
+        "vue-router": "^4.3.2"
     },
     "lint-staged": {
         "*.{js,jsx,ts,tsx}": [
